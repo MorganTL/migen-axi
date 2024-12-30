@@ -45,7 +45,7 @@ class AXI2CSR(Module):
         cut_addr = self._relative_addr >> 2
         # addr_bits = log2_int(size >> 2)
 
-        self._add_slave(lambda a: a == cut_addr, port)
+        self._add_slave(lambda a: a == self._relative_addr, port)
         # self._add_slave(lambda a: a[addr_bits:] == cut_addr >> addr_bits,
         #                 port)
 
