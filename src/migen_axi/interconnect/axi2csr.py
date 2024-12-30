@@ -43,10 +43,11 @@ class AXI2CSR(Module):
         # check if the remaining part of the address bus
         # corresponds to the possible address
         cut_addr = self._relative_addr >> 2
-        addr_bits = log2_int(size >> 2)
+        # addr_bits = log2_int(size >> 2)
 
-        self._add_slave(lambda a: a[addr_bits:] == cut_addr >> addr_bits,
-                        port)
+        self._add_slave(lambda a: a == cut_addr, port)
+        # self._add_slave(lambda a: a[addr_bits:] == cut_addr >> addr_bits,
+        #                 port)
 
         addr_start = self._relative_addr
         self._relative_addr += size
