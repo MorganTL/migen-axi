@@ -99,73 +99,105 @@ class AXI2CSR(Module):
 
         id_ = Signal(len(ar.id), reset_less=True)
 
+        # master/slave can calculate the burst len inside instead of using Xlast signal
+        w_len = Signal(len(aw.len) + 1)
+        r_len = Signal(len(ar.len) + 1)
+
+        w_offset = Signal(8)
+        r_offset = Signal(8)
+
         # control
         pending = Signal(reset_less=True)
-        self.submodules.fsm = fsm = FSM(reset_state="IDLE")
+        self.submodules.fsm = fsm = FSM(reset_state="WAIT_WRITE")
+        # The AXI read/write channel are independent however CSR bus cannot handle read/write at the same time
+        # Without alternating the read/write ops, the ARM core will sometime send read + write ops at the same time. 
+        # And stall since it is waiting read and write response.
+        # https://adaptivesupport.amd.com/s/question/0D52E00006hps8PSAQ/debugging-axi-stall-in-zynq?language=en_US
         fsm.act(
-            "IDLE",
+            "WAIT_WRITE",
             aw.ready.eq(1),
-            ar.ready.eq(1),
             If(
                 aw.valid,
-                ar.ready.eq(0),
                 NextValue(internal_csr.adr, aw.addr[2:]),
                 NextValue(id_, aw.id),
+                NextValue(w_len, aw.len + 1),
+                NextValue(w_offset, 1 << aw.size),
                 NextState("WRITE"),
-            ).Elif(
+            ).Else(
+                NextState("WAIT_READ"),
+            )
+        )
+        fsm.act(
+            "WAIT_READ",
+            ar.ready.eq(1),
+            If(
                 ar.valid,
+                aw.ready.eq(0),
                 NextValue(internal_csr.adr, ar.addr[2:]),
                 NextValue(id_, ar.id),
+                NextValue(r_len, ar.len + 1),
                 NextValue(pending, 1),
+                NextValue(r_offset, 1 << ar.size),
                 NextState("READ"),
-            ),
+            ).Else(
+                NextState("WAIT_WRITE"),
+            )
         )
         fsm.act(
             "WRITE",
-            If(
-                w.valid,
+            If(w.valid,
                 w.ready.eq(1),
+                NextValue(w_len, w_len - 1),
                 NextValue(internal_csr.we, 1),
+                NextValue(internal_csr.dat_w, w.data),
                 NextState("WRITE_DONE"),
             ),
         )
         fsm.act(
             "WRITE_DONE",
             b.valid.eq(1),
-            If(
-                b.ready,
-                NextState("IDLE")
+            b.id.eq(id_),
+            b.resp.eq(axi.Response.okay),
+            If(b.ready,
+                If(w_len == 0,
+                    NextState("WAIT_READ"),
+                ).Else(
+                    NextValue(internal_csr.adr, internal_csr.adr + w_offset[2:]),
+                    NextState("WRITE"),
+                )
             )
         )
+        # CSR bank takes 2 cycle to read
         fsm.act(
             "READ",
-            If(
-                ~pending,
+            If(~pending,
+                NextValue(r_len, r_len - 1),
                 NextState("READ_DONE"),
             )
         )
         fsm.act(
             "READ_DONE",
             r.valid.eq(1),
-            If(
-                r.ready,
-                NextState("IDLE"),
+            r.id.eq(id_),
+            r.resp.eq(axi.Response.okay),
+            # slave only drive r.last during a burst @ last writer transfer
+            r.last.eq(r_len == 0),
+            If(r.ready,
+                If(r_len == 0,
+                    NextState("WAIT_WRITE"),
+                ).Else(
+                    NextValue(pending, 1),
+                    NextValue(internal_csr.adr, internal_csr.adr + r_offset[2:]),
+                    NextState("READ"),
+                )
             )
         )
 
         # data path
-        self.comb += [
-            r.id.eq(id_),
-            b.id.eq(id_),
-            r.resp.eq(axi.Response.okay),
-            b.resp.eq(axi.Response.okay),
-            r.last.eq(1),
-        ]
         self.sync += [
             pending.eq(0),
             r.data.eq(internal_csr.dat_r),
             internal_csr.we.eq(0),
-            internal_csr.dat_w.eq(w.data),
         ]
 
         decoder = AddressDecoder(internal_csr,
